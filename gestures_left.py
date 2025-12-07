@@ -44,3 +44,31 @@ def knuckle_heights_to_str(knuckles: KnuckleHeights) -> str:
             f"mid={knuckles.middle:.3f}, "
             f"ring={knuckles.ring:.3f}, "
             f"pky={knuckles.pinky:.3f}")
+
+def detect_chord(knuckles, templates, tolerance=0.05):
+    """
+    Compare knuckle positions to chord templates.
+    Returns the best matching chord name, or None.
+    """
+    best_chord = None
+    best_error = 999
+
+    for chord_name, target in templates.items():
+        # Compute sum of absolute differences
+        error = (
+            abs(knuckles.index - target["index"]) +
+            abs(knuckles.middle - target["middle"]) +
+            abs(knuckles.ring - target["ring"]) +
+            abs(knuckles.pinky - target["pinky"])
+        )
+
+        if error < best_error:
+            best_error = error
+            best_chord = chord_name
+
+    # Only accept if within tolerance
+    if best_error < tolerance:
+        return best_chord
+    else:
+        return None
+

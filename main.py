@@ -12,6 +12,21 @@ from config import (
 from zones import hand_in_zone
 from gestures_left import get_knuckle_heights, knuckle_heights_to_str
 from gestures_right import RightHandSwipeDetector
+from chord_detection import detect_chord
+
+# a chord dictionary, placed here temporarily
+CHORD_TEMPLATES = {
+    "C": {
+        "index": -0.100,
+        "middle": -0.106,
+        "ring": -0.105,
+    },
+    "G": {
+        "middle": -0.084,
+        "ring": -0.083,
+        "pinky": -0.083,
+    }
+}
 
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
@@ -46,7 +61,7 @@ def main():
 
             cv2.rectangle(frame, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
             cv2.putText(frame, "LEFT HAND AREA", (lx1+5, ly1-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
             cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)
             cv2.putText(frame, "RIGHT HAND AREA", (rx1+5, ry1-10),
@@ -83,9 +98,26 @@ def main():
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
                             print("Left hand knuckles:", text)
 
+                            # === NEW: chord detection with tolerance + debug
+                            chord = detect_chord(
+                                knuckles,
+                                CHORD_TEMPLATES,
+                                tolerance=0.02,    # you can bump to 0.03 if needed
+                                debug=True
+                            )
+
+                            if chord:
+                                cv2.putText(frame, f"CHORD: {chord}", (10, 55),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+                                print("Recognized chord:", chord)
+                            else:
+                                cv2.putText(frame, "CHORD: None", (10, 55),
+                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+
                         else:
                             cv2.putText(frame, "LEFT OUTSIDE ZONE", (10, 30),
                                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+
 
                     elif label == "Right":
                         # Only care if right hand is inside RIGHT_ZONE
