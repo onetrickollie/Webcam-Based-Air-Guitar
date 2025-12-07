@@ -5,7 +5,7 @@ class RightHandSwipeDetector:
     Tracks wrist's Y position and detects up/dpwn swipes
     """
     def __init__(self, down_threshold = 0.02, up_threshold = 0.02):
-        self.prev_y = Optional[float] = None
+        self.prev_y : Optional[float] = None
         self.down_threshold = down_threshold
         self.up_threshold = up_threshold
 
