@@ -13,7 +13,7 @@ from typing import List, Optional
 
 import numpy as np
 
-from chords import chord_midi_notes
+from chords import CHORD_FRETS, chord_midi_notes
 from config import MASTER_VOLUME, NOTE_SECONDS, SAMPLE_RATE, STRUM_SPREAD_SEC
 
 CUT_SECONDS = 0.015   # fade when a string is re-struck or muted
@@ -92,8 +92,17 @@ class AudioPlayer:
         self.voices: List[_Voice] = []
         self.lock = threading.Lock()
         self.stream = None
+        self._warm_cache()
         if enable_output:
             self._open_stream()
+
+    def _warm_cache(self):
+        """Synthesize every note up front (~0.1 s) so the first strum isn't late."""
+        for chord in CHORD_FRETS:
+            for midi in chord_midi_notes(chord):
+                if midi is not None:
+                    for brightness in range(4):
+                        pluck(midi, brightness, self.sample_rate)
 
     def _open_stream(self):
         try:

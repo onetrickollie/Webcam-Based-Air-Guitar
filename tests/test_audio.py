@@ -18,11 +18,15 @@ def measured_pitch(samples, sr=SAMPLE_RATE):
     return sr / lag
 
 
-@pytest.mark.parametrize("midi", [40, 45, 50, 55, 59, 64, 67])
-def test_pluck_is_in_tune(midi):
-    freq = measured_pitch(pluck(midi))
+ALL_CHORD_NOTES = sorted({m for c in CHORD_FRETS for m in chord_midi_notes(c) if m is not None})
+
+
+@pytest.mark.parametrize("midi", ALL_CHORD_NOTES)
+@pytest.mark.parametrize("brightness", [0, 3])
+def test_every_chord_note_is_in_tune(midi, brightness):
+    freq = measured_pitch(pluck(midi, brightness))
     cents = 1200 * np.log2(freq / midi_to_freq(midi))
-    assert abs(cents) < 10, f"{midi}: {freq:.1f} Hz is {cents:+.1f} cents off"
+    assert abs(cents) < 5, f"{midi}: {freq:.1f} Hz is {cents:+.1f} cents off"
 
 
 def test_pluck_decays_and_stays_in_range():

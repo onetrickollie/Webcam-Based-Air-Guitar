@@ -31,6 +31,13 @@ GRAY = (140, 140, 140)
 
 FRET_GRACE_SEC = 0.25    # keep the chord through brief tracking dropouts
 STRUM_FLASH_SEC = 0.2
+SHORT_NAMES = {"index": "idx", "middle": "mid", "ring": "rng", "pinky": "pky"}
+
+
+def put_text(frame, text, org, font, scale, color, thickness):
+    """cv2.putText with a dark outline so it's readable over any background."""
+    cv2.putText(frame, text, org, font, scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
+    cv2.putText(frame, text, org, font, scale, color, thickness, cv2.LINE_AA)
 
 
 def zone_px(zone, w, h):
@@ -41,22 +48,23 @@ def draw_zone(frame, zone, label, color, active):
     h, w, _ = frame.shape
     x1, y1, x2, y2 = zone_px(zone, w, h)
     cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3 if active else 1)
-    cv2.putText(frame, label, (x1 + 5, y1 - 10), FONT, 0.5, color, 1)
+    put_text(frame, label, (x1 + 5, y1 - 10), FONT, 0.5, color, 1)
 
 
 def draw_curl_bars(frame, curls, x, y):
     for i, name in enumerate(FINGER_NAMES):
         value = getattr(curls, name)
         top = y + i * 18
-        cv2.putText(frame, name[:3], (x, top + 11), FONT, 0.4, WHITE, 1)
-        cv2.rectangle(frame, (x + 35, top), (x + 135, top + 12), GRAY, 1)
+        put_text(frame, SHORT_NAMES[name], (x, top + 11), FONT, 0.4, WHITE, 1)
+        cv2.rectangle(frame, (x + 35, top), (x + 135, top + 12), (40, 40, 40), -1)
         cv2.rectangle(frame, (x + 35, top), (x + 35 + int(100 * value), top + 12), GREEN, -1)
+        cv2.rectangle(frame, (x + 35, top), (x + 135, top + 12), GRAY, 1)
 
 
 def draw_help(frame, show_help):
     h, w, _ = frame.shape
     if not show_help:
-        cv2.putText(frame, "h: help", (10, h - 10), FONT, 0.45, GRAY, 1)
+        put_text(frame, "h: help", (10, h - 10), FONT, 0.45, GRAY, 1)
         return
     keys = "  ".join(f"{i + 1}:{name}" for i, name in enumerate(CHORD_ORDER))
     lines = [
@@ -64,8 +72,12 @@ def draw_help(frame, show_help):
         keys,
         "r: reset calibration   d: debug output   h: hide help   ESC/q: quit",
     ]
+    # dim the strip behind the help so it doesn't fight with the zones
+    top = h - 20 * len(lines) - 12
+    strip = frame[top:h]
+    strip[:] = (strip * 0.35).astype(strip.dtype)
     for i, line in enumerate(lines):
-        cv2.putText(frame, line, (10, h - 12 - 20 * (len(lines) - 1 - i)), FONT, 0.45, WHITE, 1)
+        put_text(frame, line, (10, h - 12 - 20 * (len(lines) - 1 - i)), FONT, 0.45, WHITE, 1)
 
 
 def parse_args():
@@ -171,23 +183,23 @@ def main():
             draw_zone(frame, RIGHT_ZONE, "STRUM (right hand)", BLUE, strum_hand is not None)
 
             chord_color = GREEN if fret_hand is not None else GRAY
-            cv2.putText(frame, chord_tracker.current, (10, 50), FONT, 1.6, chord_color, 3)
+            put_text(frame, chord_tracker.current, (10, 50), FONT, 1.6, chord_color, 3)
             if curls is not None:
                 draw_curl_bars(frame, curls, 10, 70)
 
             if last_strum and now - last_strum[1] < STRUM_FLASH_SEC:
                 arrow = "STRUM DOWN" if last_strum[0] == "down" else "STRUM UP"
                 h, w, _ = frame.shape
-                cv2.putText(frame, arrow, (int(w * 0.6), 50), FONT, 1.0, RED, 3)
+                put_text(frame, arrow, (int(w * 0.6), 50), FONT, 1.0, RED, 3)
 
             if recorder.active:
-                cv2.putText(frame, f"Hold {recorder.chord} shape... {int(recorder.progress * 100)}%",
+                put_text(frame, f"Hold {recorder.chord} shape... {int(recorder.progress * 100)}%",
                             (10, 160), FONT, 0.7, YELLOW, 2)
             elif now < status_msg[1]:
-                cv2.putText(frame, status_msg[0], (10, 160), FONT, 0.7, YELLOW, 2)
+                put_text(frame, status_msg[0], (10, 160), FONT, 0.7, YELLOW, 2)
 
             if args.no_sound or audio.stream is None:
-                cv2.putText(frame, "(sound off)", (10, 185), FONT, 0.5, GRAY, 1)
+                put_text(frame, "(sound off)", (10, 185), FONT, 0.5, GRAY, 1)
 
             draw_help(frame, show_help)
             cv2.imshow("Air Guitar", frame)
