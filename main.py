@@ -1,155 +1,217 @@
-# main.py
+import argparse
+import time
 
 import cv2
 import mediapipe as mp
 
-from config import (
-    LEFT_ZONE,
-    RIGHT_ZONE,
-    RIGHT_SWIPE_DOWN_THRESHOLD,
-    RIGHT_SWIPE_UP_THRESHOLD,
+from audio_player import AudioPlayer
+from calibration import CalibrationRecorder, load_templates, reset_templates, save_templates
+from chord_detection import ChordTracker
+from chords import CHORD_ORDER
+from config import FONT, LEFT_ZONE, RIGHT_ZONE
+from gestures_left import (
+    FINGER_NAMES,
+    CurlSmoother,
+    finger_curls_to_str,
+    get_finger_curls,
+    landmarks_to_array,
 )
-from zones import hand_in_zone
-from gestures_left import get_knuckle_heights, knuckle_heights_to_str
-from gestures_right import RightHandSwipeDetector
-from chord_detection import detect_chord
-
-# a chord dictionary, placed here temporarily
-CHORD_TEMPLATES = {
-    "C": {
-        "index": -0.100,
-        "middle": -0.106,
-        "ring": -0.105,
-    },
-    "G": {
-        "middle": -0.084,
-        "ring": -0.083,
-        "pinky": -0.083,
-    }
-}
+from gestures_right import StrumDetector
+from zones import hand_in_zone, palm_center
 
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 
+GREEN = (0, 255, 0)
+BLUE = (255, 120, 0)
+YELLOW = (0, 255, 255)
+RED = (0, 0, 255)
+WHITE = (255, 255, 255)
+GRAY = (140, 140, 140)
+
+FRET_GRACE_SEC = 0.25    # keep the chord through brief tracking dropouts
+STRUM_FLASH_SEC = 0.2
+
+
+def zone_px(zone, w, h):
+    return int(zone[0] * w), int(zone[1] * h), int(zone[2] * w), int(zone[3] * h)
+
+
+def draw_zone(frame, zone, label, color, active):
+    h, w, _ = frame.shape
+    x1, y1, x2, y2 = zone_px(zone, w, h)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3 if active else 1)
+    cv2.putText(frame, label, (x1 + 5, y1 - 10), FONT, 0.5, color, 1)
+
+
+def draw_curl_bars(frame, curls, x, y):
+    for i, name in enumerate(FINGER_NAMES):
+        value = getattr(curls, name)
+        top = y + i * 18
+        cv2.putText(frame, name[:3], (x, top + 11), FONT, 0.4, WHITE, 1)
+        cv2.rectangle(frame, (x + 35, top), (x + 135, top + 12), GRAY, 1)
+        cv2.rectangle(frame, (x + 35, top), (x + 35 + int(100 * value), top + 12), GREEN, -1)
+
+
+def draw_help(frame, show_help):
+    h, w, _ = frame.shape
+    if not show_help:
+        cv2.putText(frame, "h: help", (10, h - 10), FONT, 0.45, GRAY, 1)
+        return
+    keys = "  ".join(f"{i + 1}:{name}" for i, name in enumerate(CHORD_ORDER))
+    lines = [
+        "Hold a chord shape with your left hand, then press its number to calibrate:",
+        keys,
+        "r: reset calibration   d: debug output   h: hide help   ESC/q: quit",
+    ]
+    for i, line in enumerate(lines):
+        cv2.putText(frame, line, (10, h - 12 - 20 * (len(lines) - 1 - i)), FONT, 0.45, WHITE, 1)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Webcam air guitar")
+    parser.add_argument("--camera", type=int, default=0, help="camera index (default 0)")
+    parser.add_argument("--no-sound", action="store_true", help="run without audio output")
+    parser.add_argument("--debug", action="store_true", help="print curls and chord distances")
+    return parser.parse_args()
+
 
 def main():
-    cap = cv2.VideoCapture(0)
+    args = parse_args()
 
-    right_swipe_detector = RightHandSwipeDetector(
-        down_threshold=RIGHT_SWIPE_DOWN_THRESHOLD,
-        up_threshold=RIGHT_SWIPE_UP_THRESHOLD
-    )
+    cap = cv2.VideoCapture(args.camera)
+    if not cap.isOpened():
+        print("Could not open the camera. On macOS, allow camera access for your "
+              "terminal app in System Settings > Privacy & Security > Camera.")
+        return
+
+    templates = load_templates()
+    chord_tracker = ChordTracker(templates)
+    smoother = CurlSmoother()
+    strum_detector = StrumDetector()
+    recorder = CalibrationRecorder()
+    audio = AudioPlayer(enable_output=not args.no_sound)
+
+    debug = args.debug
+    show_help = True
+    curls = None
+    last_fret_seen = 0.0
+    last_strum = None        # (direction, time)
+    status_msg = ("", 0.0)   # (text, expires at)
 
     with mp_hands.Hands(
         max_num_hands=2,
-        min_detection_confidence=0.5,
-        min_tracking_confidence=0.5
+        model_complexity=1,
+        min_detection_confidence=0.6,
+        min_tracking_confidence=0.6,
     ) as hands:
 
         while True:
             ret, frame = cap.read()
             if not ret:
                 break
+            now = time.perf_counter()
 
             # Flip horizontally so it feels like a mirror
             frame = cv2.flip(frame, 1)
-            h, w, _ = frame.shape
 
-            # Draw left/right zones for debugging
-            lx1, ly1, lx2, ly2 = int(LEFT_ZONE[0]*w), int(LEFT_ZONE[1]*h), int(LEFT_ZONE[2]*w), int(LEFT_ZONE[3]*h)
-            rx1, ry1, rx2, ry2 = int(RIGHT_ZONE[0]*w), int(RIGHT_ZONE[1]*h), int(RIGHT_ZONE[2]*w), int(RIGHT_ZONE[3]*h)
-
-            cv2.rectangle(frame, (lx1, ly1), (lx2, ly2), (0, 255, 0), 2)
-            cv2.putText(frame, "LEFT HAND AREA", (lx1+5, ly1-10),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-
-            cv2.rectangle(frame, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)
-            cv2.putText(frame, "RIGHT HAND AREA", (rx1+5, ry1-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 1)
-
-            # Run mediapipe
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             results = hands.process(rgb)
 
-            if results.multi_hand_landmarks and results.multi_handedness:
-                for hand_landmarks, handedness in zip(
-                    results.multi_hand_landmarks,
-                    results.multi_handedness
-                ):
-                    label = handedness.classification[0].label  # "Left" or "Right"
+            # Decide which hand is which by where it is on screen, not by
+            # mediapipe's Left/Right label: the label sometimes flips between
+            # frames, which made the old version drop the fretting hand.
+            fret_hand = strum_hand = None
+            if results.multi_hand_landmarks:
+                world = results.multi_hand_world_landmarks or results.multi_hand_landmarks
+                for screen_lm, world_lm in zip(results.multi_hand_landmarks, world):
+                    mp_drawing.draw_landmarks(frame, screen_lm, mp_hands.HAND_CONNECTIONS)
+                    points = landmarks_to_array(screen_lm)
+                    if fret_hand is None and hand_in_zone(points, LEFT_ZONE):
+                        fret_hand = landmarks_to_array(world_lm)
+                    elif strum_hand is None and hand_in_zone(points, RIGHT_ZONE):
+                        strum_hand = points
 
-                    # Draw landmarks
-                    mp_drawing.draw_landmarks(
-                        frame, hand_landmarks, mp_hands.HAND_CONNECTIONS
-                    )
+            # --- left hand: chord shape ---
+            if fret_hand is not None:
+                last_fret_seen = now
+                curls = smoother.update(get_finger_curls(fret_hand))
+                chord_tracker.update(curls, debug=debug)
+                if debug:
+                    print("Left hand curls:", finger_curls_to_str(curls))
 
-                    if label == "Left":
-                        # Only care if left hand is inside LEFT_ZONE
-                        if hand_in_zone(hand_landmarks, LEFT_ZONE):
-                            cv2.putText(frame, "LEFT IN ZONE", (lx1+10, ly1+20),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                done = recorder.feed(curls)
+                if done:
+                    chord, shape = done
+                    templates[chord] = shape
+                    save_templates(templates)
+                    status_msg = (f"Saved {chord} shape", now + 2.0)
+                    print(f"[calibration] {chord} = {shape}")
+            elif now - last_fret_seen > FRET_GRACE_SEC:
+                smoother.reset()
+                chord_tracker.reset()
+                curls = None
 
-                            # STEP 1: get knuckle heights and show them
-                            knuckles = get_knuckle_heights(hand_landmarks)
-                            text = knuckle_heights_to_str(knuckles)
+            # --- right hand: strumming ---
+            if strum_hand is not None:
+                _, y = palm_center(strum_hand)
+                strum = strum_detector.update(y, now)
+                if strum:
+                    direction, strength = strum
+                    audio.strum(chord_tracker.current, direction, strength)
+                    last_strum = (direction, now)
+                    if debug:
+                        print(f">>> STRUM {direction.upper()} {chord_tracker.current} "
+                              f"strength={strength:.2f}")
+            else:
+                strum_detector.reset()
 
-                            # Show on screen and print in console
-                            cv2.putText(frame, text, (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                            print("Left hand knuckles:", text)
+            # --- drawing ---
+            draw_zone(frame, LEFT_ZONE, "FRET (left hand)", GREEN, fret_hand is not None)
+            draw_zone(frame, RIGHT_ZONE, "STRUM (right hand)", BLUE, strum_hand is not None)
 
-                            # === NEW: chord detection with tolerance + debug
-                            chord = detect_chord(
-                                knuckles,
-                                CHORD_TEMPLATES,
-                                tolerance=0.02,    # you can bump to 0.03 if needed
-                                debug=True
-                            )
+            chord_color = GREEN if fret_hand is not None else GRAY
+            cv2.putText(frame, chord_tracker.current, (10, 50), FONT, 1.6, chord_color, 3)
+            if curls is not None:
+                draw_curl_bars(frame, curls, 10, 70)
 
-                            if chord:
-                                cv2.putText(frame, f"CHORD: {chord}", (10, 55),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
-                                print("Recognized chord:", chord)
-                            else:
-                                cv2.putText(frame, "CHORD: None", (10, 55),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+            if last_strum and now - last_strum[1] < STRUM_FLASH_SEC:
+                arrow = "STRUM DOWN" if last_strum[0] == "down" else "STRUM UP"
+                h, w, _ = frame.shape
+                cv2.putText(frame, arrow, (int(w * 0.6), 50), FONT, 1.0, RED, 3)
 
-                        else:
-                            cv2.putText(frame, "LEFT OUTSIDE ZONE", (10, 30),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
+            if recorder.active:
+                cv2.putText(frame, f"Hold {recorder.chord} shape... {int(recorder.progress * 100)}%",
+                            (10, 160), FONT, 0.7, YELLOW, 2)
+            elif now < status_msg[1]:
+                cv2.putText(frame, status_msg[0], (10, 160), FONT, 0.7, YELLOW, 2)
 
+            if args.no_sound or audio.stream is None:
+                cv2.putText(frame, "(sound off)", (10, 185), FONT, 0.5, GRAY, 1)
 
-                    elif label == "Right":
-                        # Only care if right hand is inside RIGHT_ZONE
-                        wrist = hand_landmarks.landmark[0]
-                        wrist_y = wrist.y
-
-                        if hand_in_zone(hand_landmarks, RIGHT_ZONE):
-                            cv2.putText(frame, "RIGHT IN ZONE", (rx1+10, ry1+20),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-
-                            # Detect swipe direction
-                            swipe = right_swipe_detector.update(wrist_y)
-                            if swipe == "down":
-                                cv2.putText(frame, "STRUM DOWN", (10, 60),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                print(">>> STRUM DOWN (all 6 strings)")
-                                # TODO: call audio_player.play_strum_down(current_chord)
-
-                            elif swipe == "up":
-                                cv2.putText(frame, "STRUM UP", (10, 60),
-                                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                                print(">>> STRUM UP (all 6 strings)")
-                                # TODO: call audio_player.play_strum_up(current_chord)
-                        else:
-                            cv2.putText(frame, "RIGHT OUTSIDE ZONE", (10, 60),
-                                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
-
+            draw_help(frame, show_help)
             cv2.imshow("Air Guitar", frame)
-            key = cv2.waitKey(1) & 0xFF
-            if key == 27:  # ESC
-                break
 
+            key = cv2.waitKey(1) & 0xFF
+            if key in (27, ord("q")):  # ESC
+                break
+            if ord("1") <= key < ord("1") + len(CHORD_ORDER):
+                chord = CHORD_ORDER[key - ord("1")]
+                if fret_hand is None:
+                    status_msg = ("Put your left hand in the FRET zone first", now + 2.0)
+                else:
+                    recorder.start(chord)
+            elif key == ord("r"):
+                recorder.cancel()
+                templates = reset_templates()
+                chord_tracker.templates = templates
+                status_msg = ("Calibration reset to defaults", now + 2.0)
+            elif key == ord("d"):
+                debug = not debug
+            elif key == ord("h"):
+                show_help = not show_help
+
+    audio.close()
     cap.release()
     cv2.destroyAllWindows()
 

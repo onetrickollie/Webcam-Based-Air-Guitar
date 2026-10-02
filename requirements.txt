@@ -1,0 +1,7 @@
+# mediapipe 0.10.21 is the last release with the mp.solutions.hands API used here.
+# It needs numpy < 2, and opencv-python 4.10 is the newest that supports numpy 1.x.
+mediapipe==0.10.21
+opencv-python==4.10.0.84
+numpy>=1.26,<2
+sounddevice>=0.4.6
+pytest>=8
